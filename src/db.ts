@@ -5,10 +5,10 @@ let pool: Pool;
 
 export async function createPool() {
   pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'testdb',
+    host: process.env.DB_HOST || '51.79.186.0',
+    user: process.env.DB_USER || 'diamond2_admin',
+    password: process.env.DB_PASSWORD || 'pKp6KPo2H^+em.Wf',
+    database: process.env.DB_NAME || 'diamond2_shop',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
