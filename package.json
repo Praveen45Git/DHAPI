@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "main": "dist/app.js",
   "scripts": {
-    "dev": "nodemon src/app.ts",
+    "dev": "nodemon src/app.ts",  
     "build": "tsc",
-    "start": "npm run dev",
-    "render-build": "npm install && npm run build"  
+    "start": "node dist/app.js",     
+    "render-build": "npm install && npm run build"
   },
   "dependencies": {
     "@types/pg": "^8.16.0",
