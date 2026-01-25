@@ -562,7 +562,7 @@ export class OrderService {
 
 // ============ IMAGE SERVICE ============
 export class ImageService {
-  private baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+  private baseUrl = process.env.BASE_URL || 'https://dhapi.onrender.com';
 
   getFullUrl(filename: string): string {
     return `${this.baseUrl}/uploads/products/${filename}`;
