@@ -29,7 +29,7 @@ const imageService = new ImageService();
 
 // CORS configuration
 const corsOptions = {
-  origin: ['http://localhost:8080', 'http://localhost:3000', 'http://localhost:8081', 'https://diamondholdingsco.com'],
+  origin: ['http://localhost:8080', 'http://localhost:3000', 'http://localhost:8081', 'https://diamondholdingsco.com','https://admin.diamondholdingsco.com'],
   credentials: true
 };
 
