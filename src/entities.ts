@@ -5,6 +5,8 @@ export interface User {
   email: string;
   age: number;
   created_at: string;
+  password_hash:string;
+  is_active: number;
 }
 
 export interface Product {

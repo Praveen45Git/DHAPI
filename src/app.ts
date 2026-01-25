@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
+import bcrypt from 'bcrypt';
 import { createPool, testConnection } from './db';
 import { 
   ProductService, 
@@ -92,6 +93,12 @@ const productService = new ProductService();
 const orderRepo = new OrderRepository();
 const orderDetailRepo = new OrderDetailRepository();
 const orderService = new OrderService();
+
+// ============ HELPER FUNCTIONS ============
+function removePasswordFromUser(user: any): any {
+  const { password_hash, ...userWithoutPassword } = user;
+  return userWithoutPassword;
+}
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
@@ -204,20 +211,24 @@ app.get('/api/uploads', (req, res) => {
 });
 
 // ============ USERS ============
+// GET all users (with password removed)
 app.get('/users', async (req, res) => {
   try {
     const users = await userRepo.findAll();
-    res.json({ success: true, data: users });
+    const safeUsers = users.map(removePasswordFromUser);
+    res.json({ success: true, data: safeUsers });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch users' });
   }
 });
 
+// GET user by ID (with password removed)
 app.get('/users/:id', async (req, res) => {
   try {
     const user = await userRepo.findById(parseInt(req.params.id));
     if (user) {
-      res.json({ success: true, data: user });
+      const safeUser = removePasswordFromUser(user);
+      res.json({ success: true, data: safeUser });
     } else {
       res.status(404).json({ success: false, error: 'User not found' });
     }
@@ -226,12 +237,354 @@ app.get('/users/:id', async (req, res) => {
   }
 });
 
+// CREATE user (with password hashing)
 app.post('/users', async (req, res) => {
   try {
-    const userId = await userRepo.create(req.body);
-    res.status(201).json({ success: true, data: { id: userId } });
+    const { name, email, age, password, is_active } = req.body;
+    
+    if (!name || !email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Name, email and password are required' 
+      });
+    }
+
+    // Check if email already exists
+    const existingUser = await userRepo.findByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email already registered' 
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Prepare user data
+    const userData = {
+      name,
+      email,
+      age: age || 0,
+      password_hash: hashedPassword,
+      is_active: is_active !== undefined ? is_active : 1,
+      created_at: new Date().toISOString()
+    };
+
+    const userId = await userRepo.create(userData);
+    res.status(201).json({ 
+      success: true, 
+      data: { 
+        id: userId,
+        name: userData.name,
+        email: userData.email,
+        age: userData.age,
+        is_active: userData.is_active
+      }
+    });
+  } catch (error: any) {
+    console.error('Error creating user:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to create user' 
+    });
+  }
+});
+
+// UPDATE user
+app.put('/users/:id', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { name, email, age, is_active, password } = req.body;
+    
+    // Check if user exists
+    const existingUser = await userRepo.findById(userId);
+    if (!existingUser) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+    
+    // Check if email is being changed and if new email exists
+    if (email && email !== existingUser.email) {
+      const emailUser = await userRepo.findByEmail(email);
+      if (emailUser) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Email already in use' 
+        });
+      }
+    }
+    
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (email !== undefined) updateData.email = email;
+    if (age !== undefined) updateData.age = age;
+    if (is_active !== undefined) updateData.is_active = is_active;
+    
+    // Handle password update
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updateData.password_hash = hashedPassword;
+    }
+    
+    const success = await userRepo.update(userId, updateData);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'User updated successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+  } catch (error: any) {
+    console.error('Error updating user:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update user' 
+    });
+  }
+});
+
+// DELETE user
+app.delete('/users/:id', async (req, res) => {
+  try {
+    const success = await userRepo.delete(parseInt(req.params.id));
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'User deleted successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create user' });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete user' 
+    });
+  }
+});
+
+// TOGGLE user active status
+app.put('/users/:id/toggle-active', async (req, res) => {
+  try {
+    const success = await userRepo.toggleActive(parseInt(req.params.id));
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'User status updated' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update user status' 
+    });
+  }
+});
+
+// SEARCH users by name
+app.get('/users/search/:query', async (req, res) => {
+  try {
+    const users = await userRepo.searchByName(req.params.query);
+    const safeUsers = users.map(removePasswordFromUser);
+    res.json({ 
+      success: true, 
+      data: safeUsers 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to search users' 
+    });
+  }
+});
+
+// GET active/inactive users
+app.get('/users/status/:status', async (req, res) => {
+  try {
+    const status = parseInt(req.params.status); // 1 for active, 0 for inactive
+    const users = await userRepo.findByStatus(status);
+    const safeUsers = users.map(removePasswordFromUser);
+    res.json({ 
+      success: true, 
+      data: safeUsers 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch users' 
+    });
+  }
+});
+
+// GET paginated users
+app.get('/users/page/:page', async (req, res) => {
+  try {
+    const page = parseInt(req.params.page) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    
+    const { users, total, totalPages } = await userRepo.getPaginated(page, limit);
+    const safeUsers = users.map(removePasswordFromUser);
+    
+    res.json({ 
+      success: true, 
+      data: {
+        users: safeUsers,
+        total,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch users' 
+    });
+  }
+});
+
+// GET user statistics
+app.get('/users/stats', async (req, res) => {
+  try {
+    const users = await userRepo.findAll();
+    
+    const total = users.length;
+    const active = users.filter(user => user.is_active === 1).length;
+    const inactive = total - active;
+    const averageAge = users.length > 0 
+      ? users.reduce((sum, user) => sum + user.age, 0) / users.length 
+      : 0;
+
+    res.json({ 
+      success: true, 
+      data: {
+        total,
+        active,
+        inactive,
+        averageAge: parseFloat(averageAge.toFixed(2))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get user statistics' 
+    });
+  }
+});
+
+// USER LOGIN
+app.post('/users/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email and password are required' 
+      });
+    }
+    
+    const user = await userRepo.findByEmail(email);
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid credentials' 
+      });
+    }
+    
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid credentials' 
+      });
+    }
+    
+    const safeUser = removePasswordFromUser(user);
+    res.json({ 
+      success: true, 
+      message: 'Login successful',
+      data: safeUser
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Login failed' 
+    });
+  }
+});
+
+// CHANGE PASSWORD
+app.put('/users/:id/change-password', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Current password and new password are required' 
+      });
+    }
+    
+    // Get user
+    const user = await userRepo.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+    
+    // Verify current password
+    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValid) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Current password is incorrect' 
+      });
+    }
+    
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Update password
+    const success = await userRepo.updatePassword(userId, hashedPassword);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Password changed successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to change password' 
+    });
   }
 });
 
@@ -631,6 +984,24 @@ app.listen(PORT, async () => {
   console.log('  GET    /api/health                    - Health check');
   console.log('  GET    /api/uploads                   - List uploaded files');
   console.log('  POST   /api/test-upload               - Test image upload');
+  
+  // User endpoints
+  console.log('\n👤 USER ENDPOINTS:');
+  console.log('  GET    /users                         - List all users');
+  console.log('  GET    /users/:id                     - Get user by ID');
+  console.log('  POST   /users                         - Create user');
+  console.log('  PUT    /users/:id                     - Update user');
+  console.log('  DELETE /users/:id                     - Delete user');
+  console.log('  PUT    /users/:id/toggle-active       - Toggle active status');
+  console.log('  GET    /users/search/:query           - Search users by name');
+  console.log('  GET    /users/status/:status          - Get users by status (1/0)');
+  console.log('  GET    /users/page/:page             - Get paginated users');
+  console.log('  GET    /users/stats                   - Get user statistics');
+  console.log('  POST   /users/login                   - User login');
+  console.log('  PUT    /users/:id/change-password     - Change password');
+  
+  // Product endpoints
+  console.log('\n📦 PRODUCT ENDPOINTS:');
   console.log('  GET    /products                      - List all products');
   console.log('  GET    /products/active               - List active products');
   console.log('  GET    /products/:id/full             - Get product with MOQs and image');
@@ -639,11 +1010,13 @@ app.listen(PORT, async () => {
   console.log('  PUT    /products/:id/update-with-moqs - Update product & MOQs (with image)');
   console.log('  POST   /products/:id/image            - Upload product image');
   console.log('  PUT    /products/:id/toggle-active    - Toggle product status');
-  console.log('  POST   /upload                        - Upload image');
+  
+  // Order endpoints
+  console.log('\n📋 ORDER ENDPOINTS:');
   console.log('  GET    /orders                        - List all orders');
   console.log('  GET    /orders/:id                    - Get order with details');
   console.log('  POST   /orders                        - Create order (with details)');
-  console.log('  GET    /users                         - List all users');
+  
   console.log('\n💡 Tip: Use FormData for image upload endpoints');
   console.log('💡 Tip: MOQs should be sent as JSON string in FormData');
 });
