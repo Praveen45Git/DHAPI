@@ -740,53 +740,6 @@ app.post('/products/:id/image', upload.single('image'), async (req, res) => {
   }
 });
 
-// ============ CREATE PRODUCT WITH IMAGE AND MOQs ============
-app.post('/products/create-with-moqs', upload.single('image'), async (req, res) => {
-  try {
-    const { name, price, description, active, moqs } = req.body;
-    
-    if (!name || !price) {
-      return res.status(400).json({ success: false, error: 'Name and price are required' });
-    }
-
-    let image_url = null;
-    if (req.file) {
-      image_url = imageService.getFullUrl(req.file.filename);
-    }
-
-    const productData = { 
-      name, 
-      price: parseFloat(price), 
-      description: description || '', 
-      image_url, 
-      active: active || 'A',
-      Created_Date: new Date().toISOString(),
-    };
-
-    let moqList: Array<Omit<MOQ, 'id' | 'product_id' | 'Created_Date'>> = [];
-    if (moqs) {
-      try {
-        moqList = JSON.parse(moqs);
-      } catch (e) {
-        return res.status(400).json({ success: false, error: 'Invalid MOQs format' });
-      }
-    }
-
-    const productId = await productService.createProductWithMOQs(productData, moqList);
-
-    res.status(201).json({ 
-      success: true, 
-      data: { 
-        id: productId, 
-        ...productData
-      }
-    });
-
-  } catch (error) {
-    console.error('Error creating product:', error);
-    res.status(500).json({ success: false, error: 'Failed to create product' });
-  }
-});
 
 // ============ UPDATE PRODUCT AND MOQs ============
 app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, res) => {
@@ -815,18 +768,7 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
       return res.status(404).json({ success: false, error: 'Product not found' });
     }
     
-    if (moqs) {
-      let moqList: any[] = [];
-      try {
-        moqList = JSON.parse(moqs);
-        
-        if (Array.isArray(moqList) && moqList.length > 0) {
-          await productService.updateProductMOQs(productId, moqList);
-        }
-      } catch (e) {
-        console.log('No MOQs provided or invalid format, skipping MOQ update');
-      }
-    }
+   
     
     const updatedProduct = await productService.getProductWithMOQs(productId);
     
