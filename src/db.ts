@@ -4,7 +4,9 @@ import { Pool } from 'pg';
 // ============================================
 // HARDCODE YOUR NEON DATABASE URL HERE
 // ============================================
-const NEON_URL = 'postgresql://neondb_owner:npg_FXK9A5gianJw@ep-empty-truth-ah8r54sc-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+//const NEON_URL = 'postgresql://neondb_owner:npg_FXK9A5gianJw@ep-empty-truth-ah8r54sc-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+
+const NEON_URL = 'postgresql://neondb_owner:npg_FXK9A5gianJw@ep-floral-math-ahs45hkx-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
 
 // ============================================
 // DATABASE CONFIGURATION

@@ -1,8 +1,6 @@
-// app.ts
+// app.ts - WITH CLOUDINARY INTEGRATION AND NEON KEEP-ALIVE (UPDATED FOR MULTIPLE IMAGES)
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import fs from 'fs';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
 import { createPool, testConnection } from './db';
@@ -16,75 +14,52 @@ import {
   ImageService 
 } from './repository';
 import { MOQ } from './entities';
+import { parse } from 'path';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuration - Use correct paths
-const ROOT_DIR = path.join(__dirname, '..');
-const UPLOADS_DIR = path.join(ROOT_DIR, 'uploads');
-const PRODUCTS_UPLOAD_DIR = path.join(UPLOADS_DIR, 'products');
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
-const imageService = new ImageService();
+// Cloudinary configuration - make sure these are set in your .env file
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.warn('⚠️  Cloudinary environment variables not set. Image uploads will fail.');
+}
 
 // CORS configuration
 const corsOptions = {
-  origin: ['http://localhost:8080', 'http://localhost:3000', 'http://localhost:8081', 'https://diamondholdingsco.com','http://admin.diamondholdingsco.com', 'https://admin.diamondholdingsco.com'],
+  origin: [
+    'http://localhost:8080', 
+    'http://localhost:3000', 
+    'http://localhost:8081', 
+    'http://diamondholdingsco.com',
+    'https://diamondholdingsco.com',
+    'https://www.diamondholdingsco.com',
+    'http://admin.diamondholdingsco.com', 
+    'https://admin.diamondholdingsco.com',
+    'https://www.admin.diamondholdingsco.com'
+  ],
   credentials: true
 };
 
-// Initialize app
-async function initializeApp() {
-  try {
-    await createPool();
-    await testConnection();
-    console.log('✅ Database connected');
-    return true;
-  } catch (error) {
-    console.error('❌ Database connection failed:', error);
-    return false;
-  }
-}
-
-// Ensure upload directories exist
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  console.log(`📁 Created uploads directory: ${UPLOADS_DIR}`);
-}
-
-if (!fs.existsSync(PRODUCTS_UPLOAD_DIR)) {
-  fs.mkdirSync(PRODUCTS_UPLOAD_DIR, { recursive: true });
-  console.log(`📁 Created products upload directory: ${PRODUCTS_UPLOAD_DIR}`);
-}
-
-// Multer configuration - use PRODUCTS_UPLOAD_DIR
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, PRODUCTS_UPLOAD_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
-    cb(null, uniqueName);
-  }
-});
+// Multer configuration for file uploads
+const storage = multer.memoryStorage();
 
 const upload = multer({ 
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
     const isValid = allowedTypes.test(file.mimetype);
-    cb(null, isValid);
+    if (isValid) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
   }
 });
 
 // ============ MIDDLEWARE ============
 app.use(cors(corsOptions));
 app.use(express.json());
-
-// CORRECT STATIC FILE SERVING
-// Serve the entire uploads directory
-app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Services
 const userRepo = new UserRepository();
@@ -93,6 +68,7 @@ const productService = new ProductService();
 const orderRepo = new OrderRepository();
 const orderDetailRepo = new OrderDetailRepository();
 const orderService = new OrderService();
+const imageService = new ImageService();
 
 // ============ HELPER FUNCTIONS ============
 function removePasswordFromUser(user: any): any {
@@ -100,118 +76,101 @@ function removePasswordFromUser(user: any): any {
   return userWithoutPassword;
 }
 
+// Parse MOQs from string
+function parseMOQs(moqsString: string): any[] {
+  try {
+    return JSON.parse(moqsString);
+  } catch (error) {
+    console.error('Error parsing MOQs:', error);
+    return [];
+  }
+}
+
+// ============ KEEP NEON DATABASE ALIVE ============
+let keepAliveInterval: NodeJS.Timeout;
+
+function startKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
+
+  keepAliveInterval = setInterval(async () => {
+    try {
+      const { getPool } = await import('./db');
+      const pool = getPool();
+      const client = await pool.connect();
+      await client.query('SELECT 1');
+      client.release();
+      console.log('💚 Neon keep-alive ping sent');
+    } catch (error) {
+      console.error('💔 Neon keep-alive ping failed:', error);
+    }
+  }, 4 * 60 * 1000);
+  
+  console.log('🚀 Neon keep-alive service started (prevents cold starts)');
+}
+
+// ============ INITIALIZE APP ============
+async function initializeApp() {
+  try {
+    await createPool();
+    await testConnection();
+    console.log('✅ Database connected');
+    
+    // Start keep-alive to prevent Neon from sleeping
+    startKeepAlive();
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection failed:', error);
+    return false;
+  }
+}
+
 // ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
   res.json({ 
     success: true, 
     message: 'Server is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    cloudinary: {
+      configured: !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET)
+    }
   });
 });
 
-// ============ TEST FILE ACCESS ============
-app.get('/check-directories', (req, res) => {
-  const directories = {
-    __dirname,
-    ROOT_DIR,
-    UPLOADS_DIR: {
-      path: UPLOADS_DIR,
-      exists: fs.existsSync(UPLOADS_DIR),
-      files: fs.existsSync(UPLOADS_DIR) ? fs.readdirSync(UPLOADS_DIR) : []
-    },
-    PRODUCTS_UPLOAD_DIR: {
-      path: PRODUCTS_UPLOAD_DIR,
-      exists: fs.existsSync(PRODUCTS_UPLOAD_DIR),
-      files: fs.existsSync(PRODUCTS_UPLOAD_DIR) ? fs.readdirSync(PRODUCTS_UPLOAD_DIR) : []
-    }
-  };
-  
-  res.json({ success: true, data: directories });
-});
-
-app.get('/test-file/:filename', (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filePath = path.join(PRODUCTS_UPLOAD_DIR, filename);
-    
-    if (fs.existsSync(filePath)) {
-      const stats = fs.statSync(filePath);
-      res.json({
-        success: true,
-        data: {
-          filename,
-          filePath,
-          exists: true,
-          size: stats.size,
-          url: `${BASE_URL}/uploads/products/${filename}`
-        }
-      });
-    } else {
-      res.status(404).json({
-        success: false,
-        error: 'File not found',
-        filePath,
-        searchedDir: PRODUCTS_UPLOAD_DIR
-      });
-    }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to check file'      
-    });
-  }
-});
-
-// ============ TEST IMAGE UPLOAD ============
-app.post('/api/test-upload', upload.single('image'), (req, res) => {
+// ============ TEST CLOUDINARY UPLOAD ============
+app.post('/api/test-cloudinary-upload', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No image uploaded' });
     }
 
-    const imageUrl = imageService.getFullUrl(req.file.filename);
-    
+    const uploadResult = await imageService.uploadImage(req.file.buffer, {
+      folder: 'test',
+      public_id: `test_${Date.now()}`,
+      transformation: [
+        { width: 800, height: 600, crop: 'fill' },
+        { quality: 'auto' },
+        { fetch_format: 'auto' }
+      ]
+    });
+
     res.json({ 
       success: true, 
-      message: 'Upload successful',
-      data: {
-        originalName: req.file.originalname,
-        filename: req.file.filename,
-        imageUrl: imageUrl,
-        path: req.file.path,
-        size: req.file.size,
-        mimetype: req.file.mimetype
-      }
+      message: 'Cloudinary upload successful',
+      data: uploadResult
     });
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ success: false, error: 'Failed to upload image' });
-  }
-});
-
-// ============ LIST UPLOADED FILES ============
-app.get('/api/uploads', (req, res) => {
-  try {
-    const files = fs.readdirSync(PRODUCTS_UPLOAD_DIR);
-    const fileInfo = files.map(file => {
-      const filePath = path.join(PRODUCTS_UPLOAD_DIR, file);
-      const stats = fs.statSync(filePath);
-      return {
-        filename: file,
-        url: imageService.getFullUrl(file),
-        size: stats.size,
-        created: stats.birthtime
-      };
+  } catch (error: any) {
+    console.error('Cloudinary upload error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: `Failed to upload to Cloudinary: ${error.message}` 
     });
-    
-    res.json({ success: true, data: fileInfo });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to list files' });
   }
 });
 
 // ============ USERS ============
-// GET all users (with password removed)
 app.get('/users', async (req, res) => {
   try {
     const users = await userRepo.findAll();
@@ -222,7 +181,6 @@ app.get('/users', async (req, res) => {
   }
 });
 
-// GET user by ID (with password removed)
 app.get('/users/:id', async (req, res) => {
   try {
     const user = await userRepo.findById(parseInt(req.params.id));
@@ -237,7 +195,6 @@ app.get('/users/:id', async (req, res) => {
   }
 });
 
-// CREATE user (with password hashing)
 app.post('/users', async (req, res) => {
   try {
     const { name, email, age, password, is_active } = req.body;
@@ -249,7 +206,6 @@ app.post('/users', async (req, res) => {
       });
     }
 
-    // Check if email already exists
     const existingUser = await userRepo.findByEmail(email);
     if (existingUser) {
       return res.status(400).json({ 
@@ -258,10 +214,8 @@ app.post('/users', async (req, res) => {
       });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Prepare user data
     const userData = {
       name,
       email,
@@ -291,13 +245,11 @@ app.post('/users', async (req, res) => {
   }
 });
 
-// UPDATE user
 app.put('/users/:id', async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
     const { name, email, age, is_active, password } = req.body;
     
-    // Check if user exists
     const existingUser = await userRepo.findById(userId);
     if (!existingUser) {
       return res.status(404).json({ 
@@ -306,7 +258,6 @@ app.put('/users/:id', async (req, res) => {
       });
     }
     
-    // Check if email is being changed and if new email exists
     if (email && email !== existingUser.email) {
       const emailUser = await userRepo.findByEmail(email);
       if (emailUser) {
@@ -323,7 +274,6 @@ app.put('/users/:id', async (req, res) => {
     if (age !== undefined) updateData.age = age;
     if (is_active !== undefined) updateData.is_active = is_active;
     
-    // Handle password update
     if (password) {
       const hashedPassword = await bcrypt.hash(password, 10);
       updateData.password_hash = hashedPassword;
@@ -351,7 +301,6 @@ app.put('/users/:id', async (req, res) => {
   }
 });
 
-// DELETE user
 app.delete('/users/:id', async (req, res) => {
   try {
     const success = await userRepo.delete(parseInt(req.params.id));
@@ -374,7 +323,6 @@ app.delete('/users/:id', async (req, res) => {
   }
 });
 
-// TOGGLE user active status
 app.put('/users/:id/toggle-active', async (req, res) => {
   try {
     const success = await userRepo.toggleActive(parseInt(req.params.id));
@@ -397,7 +345,6 @@ app.put('/users/:id/toggle-active', async (req, res) => {
   }
 });
 
-// SEARCH users by name
 app.get('/users/search/:query', async (req, res) => {
   try {
     const users = await userRepo.searchByName(req.params.query);
@@ -414,10 +361,9 @@ app.get('/users/search/:query', async (req, res) => {
   }
 });
 
-// GET active/inactive users
 app.get('/users/status/:status', async (req, res) => {
   try {
-    const status = parseInt(req.params.status); // 1 for active, 0 for inactive
+    const status = parseInt(req.params.status);
     const users = await userRepo.findByStatus(status);
     const safeUsers = users.map(removePasswordFromUser);
     res.json({ 
@@ -432,7 +378,6 @@ app.get('/users/status/:status', async (req, res) => {
   }
 });
 
-// GET paginated users
 app.get('/users/page/:page', async (req, res) => {
   try {
     const page = parseInt(req.params.page) || 1;
@@ -459,16 +404,15 @@ app.get('/users/page/:page', async (req, res) => {
   }
 });
 
-// GET user statistics
 app.get('/users/stats', async (req, res) => {
   try {
     const users = await userRepo.findAll();
     
     const total = users.length;
-    const active = users.filter(user => user.is_active === 1).length;
+    const active = users.filter((user: { is_active: number; }) => user.is_active === 1).length;
     const inactive = total - active;
     const averageAge = users.length > 0 
-      ? users.reduce((sum, user) => sum + user.age, 0) / users.length 
+      ? users.reduce((sum: any, user: { age: any; }) => sum + user.age, 0) / users.length 
       : 0;
 
     res.json({ 
@@ -488,7 +432,6 @@ app.get('/users/stats', async (req, res) => {
   }
 });
 
-// USER LOGIN
 app.post('/users/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -531,7 +474,6 @@ app.post('/users/login', async (req, res) => {
   }
 });
 
-// CHANGE PASSWORD
 app.put('/users/:id/change-password', async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
@@ -544,7 +486,6 @@ app.put('/users/:id/change-password', async (req, res) => {
       });
     }
     
-    // Get user
     const user = await userRepo.findById(userId);
     if (!user) {
       return res.status(404).json({ 
@@ -553,7 +494,6 @@ app.put('/users/:id/change-password', async (req, res) => {
       });
     }
     
-    // Verify current password
     const isValid = await bcrypt.compare(currentPassword, user.password_hash);
     if (!isValid) {
       return res.status(400).json({ 
@@ -562,10 +502,7 @@ app.put('/users/:id/change-password', async (req, res) => {
       });
     }
     
-    // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    
-    // Update password
     const success = await userRepo.updatePassword(userId, hashedPassword);
     
     if (success) {
@@ -588,7 +525,161 @@ app.put('/users/:id/change-password', async (req, res) => {
   }
 });
 
-// ============ PRODUCTS ============
+// ============ PRODUCTS WITH MULTIPLE IMAGES ============
+
+// NEW: Create product with multiple images
+app.post('/products/create-with-images', 
+  upload.fields([
+    { name: 'image_url', maxCount: 1 },
+    { name: 'image_url2', maxCount: 1 },
+    { name: 'image_url3', maxCount: 1 },
+    { name: 'image_url4', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      const { name, price, description, active, moqs, specialprice } = req.body;
+      
+      if (!name || !price) {
+        return res.status(400).json({ success: false, error: 'Name and price are required' });
+      }
+
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      
+      const images: any = {};
+      
+      // Process uploaded files
+      if (files?.image_url) {
+        images.image_url = files.image_url[0].buffer;
+      }
+      if (files?.image_url2) {
+        images.image_url2 = files.image_url2[0].buffer;
+      }
+      if (files?.image_url3) {
+        images.image_url3 = files.image_url3[0].buffer;
+      }
+      if (files?.image_url4) {
+        images.image_url4 = files.image_url4[0].buffer;
+      }
+      
+      // Parse MOQs if provided
+      const moqsArray = moqs ? parseMOQs(moqs) : [];
+      
+      const productData = { 
+        name, 
+        price: parseFloat(price), 
+        description: description || '', 
+        active: active || 'A',
+        specialprice: specialprice ? parseFloat(specialprice) : null
+      };
+
+      // Create product with images
+      const productId = await productService.createProductWithImages(
+        productData,
+        moqsArray,
+        Object.keys(images).length > 0 ? images : undefined
+      );
+      
+      const createdProduct = await productService.getProductWithMOQs(productId);
+      
+      res.status(201).json({ 
+        success: true, 
+        message: 'Product created successfully with multiple Cloudinary image uploads',
+        data: createdProduct
+      });
+
+    } catch (error: any) {
+      console.error('Error creating product:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message || 'Failed to create product' 
+      });
+    }
+  }
+);
+
+// UPDATED: Update product with multiple images
+app.put('/products/:id/update-with-images',
+  upload.fields([
+    { name: 'image_url', maxCount: 1 },
+    { name: 'image_url2', maxCount: 1 },
+    { name: 'image_url3', maxCount: 1 },
+    { name: 'image_url4', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const { name, price, description, active, moqs, specialprice } = req.body;
+      
+      if (!name || !price) {
+        return res.status(400).json({ success: false, error: 'Name and price are required' });
+      }
+
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      
+      const images: any = {};
+      
+      // Process uploaded files
+      if (files?.image_url) {
+        images.image_url = files.image_url[0].buffer;
+      }
+      if (files?.image_url2) {
+        images.image_url2 = files.image_url2[0].buffer;
+      }
+      if (files?.image_url3) {
+        images.image_url3 = files.image_url3[0].buffer;
+      }
+      if (files?.image_url4) {
+        images.image_url4 = files.image_url4[0].buffer;
+      }
+      
+      const updateData: any = { 
+        name, 
+        price: parseFloat(price), 
+        description: description || '',
+        active: active || 'A',
+        specialprice: specialprice ? parseFloat(specialprice) : null
+      };
+
+      // Parse MOQs if provided
+      const moqsArray = moqs ? parseMOQs(moqs) : undefined;
+      
+      // Update product with images
+      const success = await productService.updateProductWithImages(
+        productId,
+        updateData,
+        moqsArray,
+        Object.keys(images).length > 0 ? images : undefined
+      );
+      
+      if (!success) {
+        return res.status(404).json({ success: false, error: 'Product not found' });
+      }
+      
+      const updatedProduct = await productService.getProductWithMOQs(productId);
+      
+      // Get optimized image URLs
+      const optimizedImages = await productService.getProductOptimizedImage(productId);
+      
+      res.json({ 
+        success: true, 
+        message: 'Product updated successfully with multiple Cloudinary images',
+        data: {
+          ...updatedProduct,
+          ...optimizedImages
+        }
+      });
+
+    } catch (error: any) {
+      console.error('Error updating product:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message || 'Failed to update product' 
+      });
+    }
+  }
+);
+
+// Get all products
 app.get('/products', async (req, res) => {
   try {
     const products = await productRepo.findAll();
@@ -598,6 +689,7 @@ app.get('/products', async (req, res) => {
   }
 });
 
+// Get active products
 app.get('/products/active', async (req, res) => {
   try {
     const products = await productRepo.findAll();
@@ -608,32 +700,20 @@ app.get('/products/active', async (req, res) => {
   }
 });
 
+// Get single product with details
 app.get('/products/:id', async (req, res) => {
   try {
     const product = await productService.getProductWithMOQs(parseInt(req.params.id));
     if (product) {
-      res.json({ success: true, data: product });
-    } else {
-      res.status(404).json({ success: false, error: 'Product not found' });
-    }
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch product' });
-  }
-});
-
-app.get('/products/:id/full', async (req, res) => {
-  try {
-    const productId = parseInt(req.params.id);
-    const product = await productService.getProductWithMOQs(productId);
-    
-    if (product) {
-      if (product.image_url && !product.image_url.startsWith('http')) {
-        product.image_url = imageService.getFullUrl(product.image_url);
-      }
+      // Get optimized image URLs
+      const optimizedImages = await productService.getProductOptimizedImage(parseInt(req.params.id));
       
       res.json({ 
         success: true, 
-        data: product 
+        data: {
+          ...product,
+          ...optimizedImages
+        }
       });
     } else {
       res.status(404).json({ success: false, error: 'Product not found' });
@@ -643,29 +723,71 @@ app.get('/products/:id/full', async (req, res) => {
   }
 });
 
+// Get product with full details including optimized images
+app.get('/products/:id/full', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.id);
+    const product = await productService.getProductWithMOQs(productId);
+    
+    if (product) {
+      // Get all optimized image URLs
+      const optimizedImages = await productService.getProductOptimizedImage(productId);
+      
+      res.json({ 
+        success: true, 
+        data: {
+          ...product,
+          ...optimizedImages
+        }
+      });
+    } else {
+      res.status(404).json({ success: false, error: 'Product not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch product' });
+  }
+});
+
+// Legacy product creation (for backward compatibility)
 app.post('/products', upload.single('image'), async (req, res) => {
   try {
-    const { name, price, description, active, moqs } = req.body;
+    const { name, price, description, active, SpecialPrice } = req.body;
     
     if (!name || !price) {
       return res.status(400).json({ success: false, error: 'Name and price are required' });
-    }
-
-    let image_url = null;
-    if (req.file) {
-      image_url = imageService.getFullUrl(req.file.filename);
     }
 
     const productData = { 
       name, 
       price: parseFloat(price), 
       description: description || '', 
-      image_url, 
+      image_url: '',
       active: active || 'A',
-      Created_Date: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      SpecialPrice: SpecialPrice ? parseFloat(SpecialPrice) : null,
+      image_url2: null,
+      image_url3: null,
+      image_url4: null
     };
 
-    const productId = await productRepo.create(productData);
+    let productId: number;
+    
+    if (req.file) {
+      // Upload single image
+      const images = { image_url: req.file.buffer };
+      productId = await productService.createProductWithImages(
+        productData,
+        [],
+        images
+      );
+    } else {
+      // Create without image
+      productId = await productService.createProductWithImages(
+        productData,
+        [],
+        undefined
+      );
+    }
     
     res.status(201).json({ 
       success: true, 
@@ -674,17 +796,20 @@ app.post('/products', upload.single('image'), async (req, res) => {
         name: productData.name,
         price: productData.price,
         description: productData.description,
-        image_url: productData.image_url,
         active: productData.active
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating product:', error);
-    res.status(500).json({ success: false, error: 'Failed to create product' });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to create product' 
+    });
   }
 });
 
+// Basic product update
 app.put('/products/:id', async (req, res) => {
   try {
     const success = await productRepo.update(parseInt(req.params.id), req.body);
@@ -698,54 +823,210 @@ app.put('/products/:id', async (req, res) => {
   }
 });
 
+// Delete product
 app.delete('/products/:id', async (req, res) => {
   try {
-    const success = await productRepo.delete(parseInt(req.params.id));
+    const productId = parseInt(req.params.id);
+    
+    // Get product to delete images from Cloudinary
+    const product = await productRepo.findById(productId);
+    
+    if (!product) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+    
+    // Delete images from Cloudinary
+    
+    await productService.deleteOldImages({
+        image_url: product.image_url || '',
+        image_url2: product.image_url2 || '',
+        image_url3: product.image_url3 || '',
+        image_url4: product.image_url4 || ''
+      });
+    
+    // Delete the product from database
+    const success = await productRepo.delete(productId);
+    
     if (success) {
       res.json({ success: true, message: 'Product deleted' });
     } else {
       res.status(404).json({ success: false, error: 'Product not found' });
     }
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to delete product' });
+  } catch (error: any) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to delete product' 
+    });
   }
 });
 
-// ============ PRODUCT IMAGE UPLOAD ============
-app.post('/products/:id/image', upload.single('image'), async (req, res) => {
+// Update specific product image
+app.put('/products/:id/images/:imageType',
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const imageType = req.params.imageType as 'image_url' | 'image_url2' | 'image_url3' | 'image_url4';
+      
+      // Validate image type
+      const validImageTypes = ['image_url', 'image_url2', 'image_url3', 'image_url4'];
+      if (!validImageTypes.includes(imageType)) {
+        return res.status(400).json({ success: false, error: 'Invalid image type' });
+      }
+      
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No image file provided' });
+      }
+      
+      // Update the specific image
+      const newImageUrl = await productService.updateProductImage(
+        productId,
+        imageType,
+        req.file.buffer
+      );
+      
+      res.json({
+        success: true,
+        imageUrl: newImageUrl,
+        message: `Image ${imageType} updated successfully`
+      });
+      
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+);
+
+// Delete specific product image
+app.delete('/products/:id/images/:imageType', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.id);
+    const imageType = req.params.imageType as 'image_url' | 'image_url2' | 'image_url3' | 'image_url4';
+    
+    // Validate image type
+    const validImageTypes = ['image_url', 'image_url2', 'image_url3', 'image_url4'];
+    if (!validImageTypes.includes(imageType)) {
+      return res.status(400).json({ success: false, error: 'Invalid image type' });
+    }
+    
+    const success = await productService.deleteProductImage(productId, imageType);
+    
+    res.json({
+      success,
+      message: `Image ${imageType} deleted successfully`
+    });
+    
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get product images
+app.get('/products/:id/images', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
     
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No image uploaded' });
+    const images = await productRepo.getProductImages(productId);
+    
+    if (!images) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
     }
     
-    const imageUrl = imageService.getFullUrl(req.file.filename);
-    const success = await productRepo.update(productId, { image_url: imageUrl });
-    
-    if (success) {
-      res.json({ 
-        success: true, 
-        data: { 
-          filename: req.file.filename, 
-          imageUrl,
-          size: req.file.size 
-        }
-      });
-    } else {
-      res.status(404).json({ success: false, error: 'Product not found' });
+    // Generate optimized URLs for display
+    const optimizedImages: any = {};
+    for (const [key, url] of Object.entries(images)) {
+      if (url) {
+        optimizedImages[`${key}_optimized`] = imageService.getProductImageUrl(url, 400, 300);
+      } else {
+        optimizedImages[`${key}_optimized`] = null;
+      }
     }
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to upload image' });
+    
+    res.json({
+      success: true,
+      data: {
+        ...images,
+        ...optimizedImages
+      }
+    });
+    
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
+// Legacy product creation with MOQs (for backward compatibility)
+app.post('/products/create-with-moqs', upload.single('image'), async (req, res) => {
+  try {
+    const { name, price, description, active, moqs } = req.body;
+    
+    if (!name || !price) {
+      return res.status(400).json({ success: false, error: 'Name and price are required' });
+    }
 
-// ============ UPDATE PRODUCT AND MOQs ============
+    const productData = { 
+      name, 
+      price: parseFloat(price), 
+      description: description || '', 
+      image_url: '',
+      active: active || 'A',
+      image_url2: null,
+      image_url3: null,
+      image_url4: null
+    };
+
+    const moqsArray = moqs ? parseMOQs(moqs) : [];
+    
+    let productId: number;
+    
+    if (req.file) {
+      // Upload single image
+      const images = { image_url: req.file.buffer };
+      productId = await productService.createProductWithImages(
+        productData,
+        moqsArray,
+        images
+      );
+    } else {
+      productId = await productService.createProductWithImages(
+        productData,
+        moqsArray,
+        undefined
+      );
+    }
+    
+    const createdProduct = await productService.getProductWithMOQs(productId);
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Product created successfully with Cloudinary image upload',
+      data: createdProduct
+    });
+
+  } catch (error: any) {
+    console.error('Error creating product:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to create product' 
+    });
+  }
+});
+
+// Legacy update product with MOQs (for backward compatibility)
 app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
-    const { name, price, description, active, moqs } = req.body;
+    const { name, price, description, active, moqs, specialprice } = req.body;
     
     if (!name || !price) {
       return res.status(400).json({ success: false, error: 'Name and price are required' });
@@ -755,26 +1036,35 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
       name, 
       price: parseFloat(price), 
       description: description || '',
-      active: active || 'A'
+      active: active || 'A',
+      specialprice: parseFloat(specialprice)
     };
 
-    if (req.file) {
-      updateData.image_url = imageService.getFullUrl(req.file.filename);
-    }
-
-    const productUpdated = await productRepo.update(productId, updateData);
+    const moqsArray = moqs ? parseMOQs(moqs) : [];
     
-    if (!productUpdated) {
+    // If image is provided, update it
+    if (req.file) {
+      const newImageUrl = await productService.updateProductImage(
+        productId,
+        'image_url',
+        req.file.buffer
+      );
+      updateData.image_url = newImageUrl;
+    }
+    
+    // Update product with MOQs
+    const success = await productService.updateProductWithImages(
+      productId,
+      updateData,
+      moqsArray,
+      undefined
+    );
+    
+    if (!success) {
       return res.status(404).json({ success: false, error: 'Product not found' });
     }
     
-   
-    
     const updatedProduct = await productService.getProductWithMOQs(productId);
-    
-    if (updatedProduct && updatedProduct.image_url && !updatedProduct.image_url.startsWith('http')) {
-      updatedProduct.image_url = imageService.getFullUrl(updatedProduct.image_url);
-    }
     
     res.json({ 
       success: true, 
@@ -782,13 +1072,16 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
       data: updatedProduct
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error updating product:', error);
-    res.status(500).json({ success: false, error: 'Failed to update product' });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update product' 
+    });
   }
 });
 
-// ============ TOGGLE PRODUCT ACTIVE STATUS ============
+// Toggle product active status
 app.put('/products/:id/toggle-active', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
@@ -804,6 +1097,65 @@ app.put('/products/:id/toggle-active', async (req, res) => {
   }
 });
 
+// ============ CLOUDINARY IMAGE MANAGEMENT ============
+app.delete('/cloudinary/images/:publicId', async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const success = await imageService.deleteImage(publicId);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Image deleted from Cloudinary' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'Failed to delete image' 
+      });
+    }
+  } catch (error: any) {
+    console.error('Error deleting image:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to delete image' 
+    });
+  }
+});
+
+app.get('/cloudinary/optimize-url', async (req, res) => {
+  try {
+    const { url, width, height } = req.query;
+    
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'URL parameter is required' 
+      });
+    }
+    
+    const optimizedUrl = imageService.getProductImageUrl(
+      url, 
+      width ? parseInt(width as string) : 400, 
+      height ? parseInt(height as string) : 300
+    );
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        originalUrl: url,
+        optimizedUrl 
+      }
+    });
+  } catch (error: any) {
+    console.error('Error generating optimized URL:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to generate optimized URL' 
+    });
+  }
+});
+
 // ============ ORDERS ============
 app.get('/orders', async (req, res) => {
   try {
@@ -814,9 +1166,24 @@ app.get('/orders', async (req, res) => {
   }
 });
 
+// UPDATED: Get order by ID with product information
 app.get('/orders/:id', async (req, res) => {
   try {
     const order = await orderService.getOrderFullDetails(parseInt(req.params.id));
+    if (order) {
+      res.json({ success: true, data: order });
+    } else {
+      res.status(404).json({ success: false, error: 'Order not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch order' });
+  }
+});
+
+// NEW: Get order with full product information
+app.get('/orders/:id/full', async (req, res) => {
+  try {
+    const order = await orderService.getOrderFullDetailsWithProducts(parseInt(req.params.id));
     if (order) {
       res.json({ success: true, data: order });
     } else {
@@ -867,25 +1234,34 @@ app.get('/customers/:customerId/orders', async (req, res) => {
   }
 });
 
-// ============ IMAGE UPLOAD ============
-app.post('/upload', upload.single('image'), (req, res) => {
+// ============ GENERAL IMAGE UPLOAD ============
+app.post('/upload/cloudinary', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No image uploaded' });
     }
 
-    const imageUrl = imageService.getFullUrl(req.file.filename);
-    
+    const uploadResult = await imageService.uploadImage(req.file.buffer, {
+      folder: 'uploads',
+      public_id: `upload_${Date.now()}`,
+      transformation: [
+        { width: 1200, height: 800, crop: 'limit' },
+        { quality: 'auto' },
+        { fetch_format: 'auto' }
+      ]
+    });
+
     res.json({ 
       success: true, 
-      data: { 
-        filename: req.file.filename, 
-        imageUrl,
-        size: req.file.size 
-      }
+      message: 'Image uploaded to Cloudinary successfully',
+      data: uploadResult
     });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to upload image' });
+  } catch (error: any) {
+    console.error('Cloudinary upload error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: `Failed to upload to Cloudinary: ${error.message}` 
+    });
   }
 });
 
@@ -896,69 +1272,54 @@ app.use((req, res) => {
 
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Server error:', err);
-  res.status(500).json({ success: false, error: 'Internal server error' });
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'File too large. Maximum size is 10MB' 
+      });
+    }
+    return res.status(400).json({ 
+      success: false, 
+      error: `File upload error: ${err.message}` 
+    });
+  }
+  
+  res.status(500).json({ 
+    success: false, 
+    error: 'Internal server error' 
+  });
 });
 
 // ============ START SERVER ============
 app.listen(PORT, async () => {
   const dbConnected = await initializeApp();
   
-  console.log(`🚀 Server running on ${BASE_URL}`);
-  console.log(`📁 Project root: ${ROOT_DIR}`);
-  console.log(`📁 Uploads directory: ${UPLOADS_DIR}`);
-  console.log(`📁 Products uploads: ${PRODUCTS_UPLOAD_DIR}`);
+  const baseUrl = `http://localhost:${PORT}`;
+  console.log(`🚀 Server running on ${baseUrl}`);
   console.log(`📊 Database: ${dbConnected ? '✅ Connected' : '❌ Disconnected'}`);
   
-  // List available image files
-  if (fs.existsSync(PRODUCTS_UPLOAD_DIR)) {
-    const files = fs.readdirSync(PRODUCTS_UPLOAD_DIR);
-    if (files.length > 0) {
-      console.log('\n📸 Available product images:');
-      files.forEach(file => {
-        console.log(`   ${file} → ${BASE_URL}/uploads/products/${file}`);
-      });
-    }
-  }
+  // Check Cloudinary configuration
+  const cloudinaryConfigured = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+  console.log(`☁️  Cloudinary: ${cloudinaryConfigured ? '✅ Configured' : '❌ Not Configured'}`);
   
-  console.log('\n📋 Available endpoints:');
-  console.log('  GET    /check-directories             - Check directory structure');
-  console.log('  GET    /test-file/:filename           - Test file access');
+  // Show keep-alive status
+  console.log(`💚 Neon keep-alive: ✅ Active (prevents cold starts)`);
+  
+  console.log('\n📋 Main endpoints:');
   console.log('  GET    /api/health                    - Health check');
-  console.log('  GET    /api/uploads                   - List uploaded files');
-  console.log('  POST   /api/test-upload               - Test image upload');
-  
-  // User endpoints
-  console.log('\n👤 USER ENDPOINTS:');
-  console.log('  GET    /users                         - List all users');
-  console.log('  GET    /users/:id                     - Get user by ID');
-  console.log('  POST   /users                         - Create user');
-  console.log('  PUT    /users/:id                     - Update user');
-  console.log('  DELETE /users/:id                     - Delete user');
-  console.log('  PUT    /users/:id/toggle-active       - Toggle active status');
-  console.log('  GET    /users/search/:query           - Search users by name');
-  console.log('  GET    /users/status/:status          - Get users by status (1/0)');
-  console.log('  GET    /users/page/:page             - Get paginated users');
-  console.log('  GET    /users/stats                   - Get user statistics');
-  console.log('  POST   /users/login                   - User login');
-  console.log('  PUT    /users/:id/change-password     - Change password');
-  
-  // Product endpoints
-  console.log('\n📦 PRODUCT ENDPOINTS:');
-  console.log('  GET    /products                      - List all products');
-  console.log('  GET    /products/active               - List active products');
-  console.log('  GET    /products/:id/full             - Get product with MOQs and image');
-  console.log('  POST   /products/create-with-moqs     - Create product (with image & MOQs)');
-  console.log('  POST   /products                      - Create product (with image)');
-  console.log('  PUT    /products/:id/update-with-moqs - Update product & MOQs (with image)');
-  console.log('  POST   /products/:id/image            - Upload product image');
-  console.log('  PUT    /products/:id/toggle-active    - Toggle product status');
-  
-  // Order endpoints
-  console.log('\n📋 ORDER ENDPOINTS:');
-  console.log('  GET    /orders                        - List all orders');
-  console.log('  GET    /orders/:id                    - Get order with details');
-  console.log('  POST   /orders                        - Create order (with details)');
-  
-  console.log('\n💡 Tip: Use FormData for image upload endpoints');
-  console.log('💡 Tip: MOQs should be sent as JSON string in FormData');
+  console.log('  GET    /users                        - List all users');
+  console.log('  GET    /products                     - List all products');
+  console.log('  GET    /orders                       - List all orders');
+  console.log('  GET    /orders/:id                   - Get order with product names');
+  console.log('  GET    /orders/:id/full              - Get order with full product info');
+  console.log('\n🖼️  Product Image Endpoints:');
+  console.log('  POST   /products/create-with-images  - Create product with 4 images');
+  console.log('  PUT    /products/:id/update-with-images - Update product with 4 images');
+  console.log('  GET    /products/:id/images          - Get all product images');
+  console.log('  PUT    /products/:id/images/:type    - Update specific image');
+  console.log('  DELETE /products/:id/images/:type    - Delete specific image');
+  console.log('\n💡 Neon will stay warm with automatic keep-alive pings');
+  console.log('💡 First request might still be slow, but subsequent ones will be fast');
 });

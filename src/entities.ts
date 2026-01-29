@@ -17,6 +17,10 @@ export interface Product {
   image_url: string | null;  // Made nullable
   active: string;
   created_at?: string;
+  specialprice: number | null; // Made nullable
+  image_url2: string | null;
+  image_url3: string | null;
+  image_url4: string | null;
 }
 
 export interface orderfile {
@@ -43,6 +47,39 @@ export interface orderdetail {
   Rate: number;
   Amount: number;
   DeliveryCharge: number;
+   product_name?: string;
+}
+
+// In api.ts - Add new interfaces for order details with product info
+
+export interface Orderdetail {
+  id?: number;
+  orderId: number;
+  Itemcode: number;
+  Qty: number;
+  Rate: number;
+  Amount: number;
+  Created_Date?: Date;
+  product_name?: string;  // Added for product name
+}
+
+export interface OrderDetailWithProduct extends Orderdetail {
+  product_name?: string;
+  product_price?: number;
+  product_description?: string;
+  product_image_url?: string;
+}
+
+export interface OrderWithDetails {
+  order: orderfile;
+  details: Orderdetail[];
+  total: number;
+}
+
+export interface OrderWithProductDetails {
+  order: orderfile;
+  details: OrderDetailWithProduct[];
+  total: number;
 }
 
 export interface MOQ{
@@ -55,9 +92,4 @@ export interface MOQ{
 
 export interface ProductWithMOQs extends Omit<Product, 'id' | 'created_at'> {
   moqs?: Omit<MOQ, 'id' | 'product_id' | 'created_at'>[];
-}
-
-export interface OrderWithDetails {
-  order: orderfile;
-  details: orderdetail[];
 }
