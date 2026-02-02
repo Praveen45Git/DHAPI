@@ -11,7 +11,8 @@ import {
   ProductRepository,
   OrderRepository,
   OrderDetailRepository,
-  ImageService 
+  ImageService,
+  ProductGroupRepository  
 } from './repository';
 import { MOQ } from './entities';
 import { parse } from 'path';
@@ -64,11 +65,11 @@ app.use(express.json());
 // Services
 const userRepo = new UserRepository();
 const productRepo = new ProductRepository();
-const productService = new ProductService();
 const orderRepo = new OrderRepository();
 const orderDetailRepo = new OrderDetailRepository();
 const orderService = new OrderService();
 const imageService = new ImageService();
+const productGroupRepo = new ProductGroupRepository();
 
 // ============ HELPER FUNCTIONS ============
 function removePasswordFromUser(user: any): any {
@@ -537,7 +538,7 @@ app.post('/products/create-with-images',
   ]),
   async (req, res) => {
     try {
-      const { name, price, description, active, moqs, specialprice } = req.body;
+      const { name, price, description, active, moqs, specialprice, groupid } = req.body;
       
       if (!name || !price) {
         return res.status(400).json({ success: false, error: 'Name and price are required' });
@@ -569,17 +570,18 @@ app.post('/products/create-with-images',
         price: parseFloat(price), 
         description: description || '', 
         active: active || 'A',
-        specialprice: specialprice ? parseFloat(specialprice) : null
+        specialprice: specialprice ? parseFloat(specialprice) : null,
+        groupid: groupid || null
       };
 
       // Create product with images
-      const productId = await productService.createProductWithImages(
+      const productId = await new ProductService().createProductWithImages(
         productData,
         moqsArray,
         Object.keys(images).length > 0 ? images : undefined
       );
       
-      const createdProduct = await productService.getProductWithMOQs(productId);
+      const createdProduct = await new ProductService().getProductWithMOQs(productId);
       
       res.status(201).json({ 
         success: true, 
@@ -608,7 +610,7 @@ app.put('/products/:id/update-with-images',
   async (req, res) => {
     try {
       const productId = parseInt(req.params.id);
-      const { name, price, description, active, moqs, specialprice } = req.body;
+      const { name, price, description, active, moqs, specialprice, groupid } = req.body;
       
       if (!name || !price) {
         return res.status(400).json({ success: false, error: 'Name and price are required' });
@@ -637,14 +639,15 @@ app.put('/products/:id/update-with-images',
         price: parseFloat(price), 
         description: description || '',
         active: active || 'A',
-        specialprice: specialprice ? parseFloat(specialprice) : null
+        specialprice: specialprice ? parseFloat(specialprice) : null,
+        groupid: groupid || null
       };
 
       // Parse MOQs if provided
       const moqsArray = moqs ? parseMOQs(moqs) : undefined;
       
       // Update product with images
-      const success = await productService.updateProductWithImages(
+      const success = await new ProductService().updateProductWithImages(
         productId,
         updateData,
         moqsArray,
@@ -655,10 +658,10 @@ app.put('/products/:id/update-with-images',
         return res.status(404).json({ success: false, error: 'Product not found' });
       }
       
-      const updatedProduct = await productService.getProductWithMOQs(productId);
+      const updatedProduct = await new ProductService().getProductWithMOQs(productId);
       
       // Get optimized image URLs
-      const optimizedImages = await productService.getProductOptimizedImage(productId);
+      const optimizedImages = await new ProductService().getProductOptimizedImage(productId);
       
       res.json({ 
         success: true, 
@@ -703,10 +706,10 @@ app.get('/products/active', async (req, res) => {
 // Get single product with details
 app.get('/products/:id', async (req, res) => {
   try {
-    const product = await productService.getProductWithMOQs(parseInt(req.params.id));
+    const product = await new ProductService().getProductWithMOQs(parseInt(req.params.id));
     if (product) {
       // Get optimized image URLs
-      const optimizedImages = await productService.getProductOptimizedImage(parseInt(req.params.id));
+      const optimizedImages = await new ProductService().getProductOptimizedImage(parseInt(req.params.id));
       
       res.json({ 
         success: true, 
@@ -727,11 +730,11 @@ app.get('/products/:id', async (req, res) => {
 app.get('/products/:id/full', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
-    const product = await productService.getProductWithMOQs(productId);
+    const product = await new ProductService().getProductWithMOQs(productId);
     
     if (product) {
       // Get all optimized image URLs
-      const optimizedImages = await productService.getProductOptimizedImage(productId);
+      const optimizedImages = await new ProductService().getProductOptimizedImage(productId);
       
       res.json({ 
         success: true, 
@@ -775,14 +778,14 @@ app.post('/products', upload.single('image'), async (req, res) => {
     if (req.file) {
       // Upload single image
       const images = { image_url: req.file.buffer };
-      productId = await productService.createProductWithImages(
+      productId = await new ProductService().createProductWithImages(
         productData,
         [],
         images
       );
     } else {
       // Create without image
-      productId = await productService.createProductWithImages(
+      productId = await new ProductService().createProductWithImages(
         productData,
         [],
         undefined
@@ -836,13 +839,12 @@ app.delete('/products/:id', async (req, res) => {
     }
     
     // Delete images from Cloudinary
-    
-    await productService.deleteOldImages({
-        image_url: product.image_url || '',
-        image_url2: product.image_url2 || '',
-        image_url3: product.image_url3 || '',
-        image_url4: product.image_url4 || ''
-      });
+    await new ProductService().deleteOldImages({
+      image_url: product.image_url || '',
+      image_url2: product.image_url2 || '',
+      image_url3: product.image_url3 || '',
+      image_url4: product.image_url4 || ''
+    });
     
     // Delete the product from database
     const success = await productRepo.delete(productId);
@@ -880,7 +882,7 @@ app.put('/products/:id/images/:imageType',
       }
       
       // Update the specific image
-      const newImageUrl = await productService.updateProductImage(
+      const newImageUrl = await new ProductService().updateProductImage(
         productId,
         imageType,
         req.file.buffer
@@ -913,7 +915,7 @@ app.delete('/products/:id/images/:imageType', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid image type' });
     }
     
-    const success = await productService.deleteProductImage(productId, imageType);
+    const success = await new ProductService().deleteProductImage(productId, imageType);
     
     res.json({
       success,
@@ -992,20 +994,20 @@ app.post('/products/create-with-moqs', upload.single('image'), async (req, res) 
     if (req.file) {
       // Upload single image
       const images = { image_url: req.file.buffer };
-      productId = await productService.createProductWithImages(
+      productId = await new ProductService().createProductWithImages(
         productData,
         moqsArray,
         images
       );
     } else {
-      productId = await productService.createProductWithImages(
+      productId = await new ProductService().createProductWithImages(
         productData,
         moqsArray,
         undefined
       );
     }
     
-    const createdProduct = await productService.getProductWithMOQs(productId);
+    const createdProduct = await new ProductService().getProductWithMOQs(productId);
     
     res.status(201).json({ 
       success: true, 
@@ -1044,7 +1046,7 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
     
     // If image is provided, update it
     if (req.file) {
-      const newImageUrl = await productService.updateProductImage(
+      const newImageUrl = await new ProductService().updateProductImage(
         productId,
         'image_url',
         req.file.buffer
@@ -1053,7 +1055,7 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
     }
     
     // Update product with MOQs
-    const success = await productService.updateProductWithImages(
+    const success = await new ProductService().updateProductWithImages(
       productId,
       updateData,
       moqsArray,
@@ -1064,7 +1066,7 @@ app.put('/products/:id/update-with-moqs', upload.single('image'), async (req, re
       return res.status(404).json({ success: false, error: 'Product not found' });
     }
     
-    const updatedProduct = await productService.getProductWithMOQs(productId);
+    const updatedProduct = await new ProductService().getProductWithMOQs(productId);
     
     res.json({ 
       success: true, 
@@ -1265,6 +1267,367 @@ app.post('/upload/cloudinary', upload.single('image'), async (req, res) => {
   }
 });
 
+// ============ PRODUCT GROUPS API ============
+
+// Get all product groups
+app.get('/product-groups', async (req, res) => {
+  try {
+    const groups = await productGroupRepo.findAll();
+    res.json({ success: true, data: groups });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch product groups' });
+  }
+});
+
+// Get active product groups
+app.get('/product-groups/active', async (req, res) => {
+  try {
+    const groups = await productGroupRepo.getActiveGroups();
+    res.json({ success: true, data: groups });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch active product groups' });
+  }
+});
+
+// Get product groups with product count
+app.get('/product-groups/with-count', async (req, res) => {
+  try {
+    const groups = await productGroupRepo.getGroupsWithProductCount();
+    res.json({ success: true, data: groups });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch product groups with count' });
+  }
+});
+
+// Get single product group
+app.get('/product-groups/:id', async (req, res) => {
+  try {
+    const group = await productGroupRepo.findById(parseInt(req.params.id));
+    if (group) {
+      res.json({ success: true, data: group });
+    } else {
+      res.status(404).json({ success: false, error: 'Product group not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch product group' });
+  }
+});
+
+// Create product group
+app.post('/product-groups', async (req, res) => {
+  try {
+    const { groupname, description, is_active } = req.body;
+    
+    if (!groupname) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Group name is required' 
+      });
+    }
+    
+    const groupData = {
+      groupname,
+      description: description || '',
+      is_active: is_active !== undefined ? is_active : 1
+    };
+    
+    const groupId = await productGroupRepo.createGroup(groupData);
+    
+    res.status(201).json({ 
+      success: true, 
+      data: { 
+        id: groupId,
+        ...groupData
+      }
+    });
+  } catch (error: any) {
+    console.error('Error creating product group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to create product group' 
+    });
+  }
+});
+
+// Update product group
+app.put('/product-groups/:id', async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.id);
+    const { groupname, description, is_active } = req.body;
+    
+    const existingGroup = await productGroupRepo.findById(groupId);
+    if (!existingGroup) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+    
+    const updateData: any = {};
+    if (groupname !== undefined) updateData.groupname = groupname;
+    if (is_active !== undefined) updateData.is_active = is_active;
+    
+    const success = await productGroupRepo.updateGroup(groupId, updateData);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Product group updated successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+  } catch (error: any) {
+    console.error('Error updating product group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update product group' 
+    });
+  }
+});
+
+// Delete product group
+app.delete('/product-groups/:id', async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.id);
+    
+    // Check if group has products using ProductService
+    const products = await new ProductService().getProductsByGroupId(groupId);
+    
+    // Check if there are any products in this group
+    if (products && products.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Cannot delete product group that has products. Please reassign or delete products first.' 
+      });
+    }
+    
+    const success = await productGroupRepo.delete(groupId);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Product group deleted successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+  } catch (error: any) {
+    console.error('Error deleting product group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to delete product group' 
+    });
+  }
+});
+
+// Toggle product group active status
+app.put('/product-groups/:id/toggle-active', async (req, res) => {
+  try {
+    const success = await productGroupRepo.toggleActive(parseInt(req.params.id));
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Product group status updated' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update product group status' 
+    });
+  }
+});
+
+// Search product groups
+app.get('/product-groups/search/:query', async (req, res) => {
+  try {
+    const groups = await productGroupRepo.searchGroups(req.params.query);
+    res.json({ 
+      success: true, 
+      data: groups 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to search product groups' 
+    });
+  }
+});
+
+// Get paginated product groups
+app.get('/product-groups/page/:page', async (req, res) => {
+  try {
+    const page = parseInt(req.params.page) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    
+    const { groups, total, totalPages } = await productGroupRepo.getPaginated(page, limit);
+    
+    res.json({ 
+      success: true, 
+      data: {
+        groups,
+        total,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch product groups' 
+    });
+  }
+});
+
+// ============ PRODUCTS BY GROUP ID ============
+
+// Get products by group ID
+app.get('/products/group/:groupId', async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    
+    // Check if group exists
+    const group = await productGroupRepo.findById(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+    
+    // Call instance method
+    const products = await new ProductService().getProductsByGroupId(groupId);
+    
+    res.json({ 
+      success: true, 
+      data: {
+        group,
+        products
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching products by group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch products by group' 
+    });
+  }
+});
+
+// Get active products by group ID
+app.get('/products/group/:groupId/active', async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    
+    // Check if group exists
+    const group = await productGroupRepo.findById(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Product group not found' 
+      });
+    }
+    
+    // Call instance method
+    const allProducts = await new ProductService().getProductsByGroupId(groupId);
+    const activeProducts = allProducts.filter(p => p.active === 'A');
+    
+    res.json({ 
+      success: true, 
+      data: {
+        group,
+        products: activeProducts
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching active products by group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch active products by group' 
+    });
+  }
+});
+
+// Get products with group information
+app.get('/products/with-groups', async (req, res) => {
+  try {
+    // Call instance method with await
+    const products = await new ProductService().getProductsWithGroups();
+    res.json({ 
+      success: true, 
+      data: products 
+    });
+  } catch (error: any) {
+    console.error('Error fetching products with groups:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch products with groups' 
+    });
+  }
+});
+
+// Update product group assignment
+app.put('/products/:id/group', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.id);
+    const { groupid } = req.body;
+    
+    // Check if product exists
+    const product = await productRepo.findById(productId);
+    if (!product) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Product not found' 
+      });
+    }
+    
+    // If groupid is provided, check if group exists
+    if (groupid !== null && groupid !== undefined) {
+      const group = await productGroupRepo.findById(groupid);
+      if (!group) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Product group not found' 
+        });
+      }
+    }
+    
+    // Call instance method
+    const success = await new ProductService().updateProductGroup(productId, groupid);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Product group updated successfully' 
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        error: 'Product not found' 
+      });
+    }
+  } catch (error: any) {
+    console.error('Error updating product group:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update product group' 
+    });
+  }
+});
+
 // ============ ERROR HANDLING ============
 app.use((req, res) => {
   res.status(404).json({ success: false, error: 'Endpoint not found' });
@@ -1320,6 +1683,19 @@ app.listen(PORT, async () => {
   console.log('  GET    /products/:id/images          - Get all product images');
   console.log('  PUT    /products/:id/images/:type    - Update specific image');
   console.log('  DELETE /products/:id/images/:type    - Delete specific image');
+  console.log('\n📁 Product Group Endpoints:');
+  console.log('  GET    /product-groups               - List all product groups');
+  console.log('  GET    /product-groups/active        - List active product groups');
+  console.log('  GET    /product-groups/with-count    - Groups with product count');
+  console.log('  GET    /product-groups/:id           - Get single group');
+  console.log('  POST   /product-groups               - Create product group');
+  console.log('  PUT    /product-groups/:id           - Update product group');
+  console.log('  DELETE /product-groups/:id           - Delete product group');
+  console.log('\n📦 Products by Group:');
+  console.log('  GET    /products/group/:groupId      - Get products by group ID');
+  console.log('  GET    /products/group/:groupId/active - Get active products by group');
+  console.log('  GET    /products/with-groups         - Get products with group info');
+  console.log('  PUT    /products/:id/group           - Update product group assignment');
   console.log('\n💡 Neon will stay warm with automatic keep-alive pings');
   console.log('💡 First request might still be slow, but subsequent ones will be fast');
 });

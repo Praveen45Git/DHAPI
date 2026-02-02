@@ -21,6 +21,7 @@ export interface Product {
   image_url2: string | null;
   image_url3: string | null;
   image_url4: string | null;
+  groupid: number;
 }
 
 export interface orderfile {
@@ -89,6 +90,14 @@ export interface MOQ{
   rate: number;
   created_at: string;
 }
+
+export interface ProductGroup{
+  id: number;
+  groupname: string;
+  created_at: string;
+  is_active?: number; // 1 for active, 0 for inactive
+}
+
 
 export interface ProductWithMOQs extends Omit<Product, 'id' | 'created_at'> {
   moqs?: Omit<MOQ, 'id' | 'product_id' | 'created_at'>[];

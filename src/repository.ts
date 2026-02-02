@@ -1,6 +1,6 @@
 // repository.ts - WITH COMPLETE CLOUDINARY INTEGRATION FOR MULTIPLE IMAGES
 import { query, queryUpdate, getPool } from './db';
-import { User, Product, MOQ, orderfile, orderdetail } from './entities';
+import { User, Product, MOQ, orderfile, orderdetail, ProductGroup } from './entities';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
 
 // Configure Cloudinary
@@ -79,6 +79,11 @@ class BaseRepository<T> {
   async delete(id: number): Promise<boolean> {
     const result = await queryUpdate(`DELETE FROM "${this.tableName}" WHERE id = $1`, [id]);
     return result.affectedRows > 0;
+  }
+
+  // Add query method to BaseRepository
+  async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
+    return await query<T[]>(sql, params);
   }
 }
 
@@ -169,11 +174,6 @@ export class UserRepository extends BaseRepository<User> {
       'UPDATE users SET password_hash = $1 WHERE id = $2',
       [hashedPassword, id]
     );
-    return result.affectedRows > 0;
-  }
-
-  async delete(id: number): Promise<boolean> {
-    const result = await queryUpdate('DELETE FROM users WHERE id = $1', [id]);
     return result.affectedRows > 0;
   }
 }
@@ -359,6 +359,24 @@ export class ProductRepository extends BaseRepository<Product> {
     const result = await queryUpdate(sql, values);
     
     return result.affectedRows > 0;
+  }
+
+  // Get products by group ID
+  async getProductsByGroupId(groupId: number): Promise<Product[]> {
+    return await query<Product[]>(
+      'SELECT * FROM products WHERE groupid = $1 ORDER BY name ASC',
+      [groupId]
+    );
+  }
+
+  // Get products with group information
+  async getProductsWithGroups(): Promise<(Product & { group_name?: string })[]> {
+    return await query<(Product & { group_name?: string })[]>(
+      `SELECT p.*, pg.groupname as group_name 
+       FROM products p 
+       LEFT JOIN productgroups pg ON p.groupid = pg.id 
+       ORDER BY p.id DESC`
+    );
   }
 }
 
@@ -736,7 +754,7 @@ export class ProductService {
     return productWithMoqs as Product & { moqs: MOQ[] };
   }
 
-  // NEW: Method to handle multiple image uploads - FIXED VERSION
+  // NEW: Method to handle multiple image uploads
   async uploadProductImages(
     imageFiles: ProductImages,
     productId?: number
@@ -771,7 +789,6 @@ export class ProductService {
         }
         
         if (uploadResult) {
-          // Fixed: Use type assertion to safely assign the value
           (uploadedImages as any)[key] = uploadResult.secure_url;
         }
       } catch (error) {
@@ -833,7 +850,7 @@ export class ProductService {
     await Promise.allSettled(deletePromises);
   }
 
-  // NEW: Create product with multiple images - FIXED VERSION
+  // NEW: Create product with multiple images
   async createProductWithImages(
     productData: any,
     moqs: Omit<MOQ, 'id' | 'product_id' | 'created_at'>[],
@@ -855,8 +872,8 @@ export class ProductService {
       const productResult = await client.query(
         `INSERT INTO products (
           name, price, description, active, created_at, specialprice,
-          image_url, image_url2, image_url3, image_url4
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+          image_url, image_url2, image_url3, image_url4, groupid
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
         [
           productData.name,
           productData.price,
@@ -867,7 +884,8 @@ export class ProductService {
           uploadedImages.image_url || '',
           uploadedImages.image_url2 || '',
           uploadedImages.image_url3 || '',
-          uploadedImages.image_url4 || ''
+          uploadedImages.image_url4 || '',
+          productData.groupid || null
         ]
       );
       
@@ -894,7 +912,7 @@ export class ProductService {
     }
   }
 
-  // NEW: Update product with multiple images - FIXED VERSION
+  // NEW: Update product with multiple images
   async updateProductWithImages(
     productId: number,
     productData: Partial<Product>,
@@ -1165,6 +1183,78 @@ export class ProductService {
     
     return result;
   }
+
+  // NEW: Get products by group ID with MOQs
+  async getProductsByGroupId(groupId: number): Promise<(Product & { moqs?: MOQ[] })[]> {
+    const products = await this.productRepo.getProductsByGroupId(groupId);
+    
+    const productIds = products.map(p => p.id).filter(id => id !== undefined);
+    
+    if (productIds.length === 0) {
+      return products.map(p => ({ ...p, moqs: [] }));
+    }
+    
+    const moqs = await query<MOQ[]>(
+      `SELECT * FROM moqs WHERE product_id = ANY($1) ORDER BY moq ASC`,
+      [productIds]
+    );
+    
+    const moqsByProductId: { [key: number]: MOQ[] } = {};
+    moqs.forEach((moq: MOQ) => {
+      if (moq.product_id !== undefined) {
+        if (!moqsByProductId[moq.product_id]) {
+          moqsByProductId[moq.product_id] = [];
+        }
+        moqsByProductId[moq.product_id].push(moq);
+      }
+    });
+    
+    return products.map(product => ({
+      ...product,
+      moqs: moqsByProductId[product.id] || []
+    }));
+  }
+
+  // NEW: Update product group
+  async updateProductGroup(productId: number, groupId: number | null): Promise<boolean> {
+    const result = await queryUpdate(
+      'UPDATE products SET groupid = $1 WHERE id = $2',
+      [groupId, productId]
+    );
+    return result.affectedRows > 0;
+  }
+
+  // NEW: Get products with group information and MOQs
+  async getProductsWithGroups(): Promise<(Product & { moqs?: MOQ[]; group_name?: string })[]> {
+    const products = await this.productRepo.getProductsWithGroups();
+    
+    const productIds = products.map(p => p.id).filter(id => id !== undefined);
+    
+    if (productIds.length === 0) {
+      return products.map(p => ({ ...p, moqs: [] }));
+    }
+    
+    const moqs = await query<MOQ[]>(
+      `SELECT * FROM moqs WHERE product_id = ANY($1) ORDER BY moq ASC`,
+      [productIds]
+    );
+    
+    const moqsByProductId: { [key: number]: MOQ[] } = {};
+    moqs.forEach((moq: MOQ) => {
+      if (moq.product_id !== undefined) {
+        if (!moqsByProductId[moq.product_id]) {
+          moqsByProductId[moq.product_id] = [];
+        }
+        moqsByProductId[moq.product_id].push(moq);
+      }
+    });
+    
+    return products.map(product => ({
+      ...product,
+      moqs: moqsByProductId[product.id] || [],
+      group_name: product.group_name
+    }));
+  }
 }
 
 // ============ ORDER SERVICE ============
@@ -1238,5 +1328,114 @@ export class OrderService {
     const total = await this.orderDetailRepo.getOrderTotal(orderId);
 
     return { order, details, total };
+  }
+}
+
+// ============ PRODUCT GROUP REPOSITORY ============
+export class ProductGroupRepository extends BaseRepository<ProductGroup> {
+  constructor() {
+    super('productgroups'); // Assuming your table is named 'productgroups'
+  }
+
+  async createGroup(group: Omit<ProductGroup, 'id' | 'created_at'>): Promise<number> {
+    const sql = `
+      INSERT INTO productgroups (groupname, is_active, created_at) 
+      VALUES ($1, $2, $3)
+      RETURNING id
+    `;
+    
+    const values = [
+      group.groupname,
+      group.is_active !== undefined ? group.is_active : 1,
+      new Date().toISOString()
+    ];
+    
+    const result = await query<{ id: number; }[]>(sql, values);
+    return result[0].id;
+  }
+
+  async updateGroup(id: number, group: Partial<ProductGroup>): Promise<boolean> {
+    const { id: _, created_at: __, ...updateData } = group;
+    
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramCount = 1;
+    
+    for (const [key, value] of Object.entries(updateData)) {
+      if (value !== undefined) {
+        updates.push(`${key} = $${paramCount}`);
+        values.push(value);
+        paramCount++;
+      }
+    }
+    
+    if (updates.length === 0) return false;
+    
+    values.push(id);
+    const sql = `UPDATE productgroups SET ${updates.join(', ')} WHERE id = $${paramCount}`;
+    const result = await queryUpdate(sql, values);
+    
+    return result.affectedRows > 0;
+  }
+
+  async toggleActive(id: number): Promise<boolean> {
+    const result = await queryUpdate(
+      `UPDATE productgroups SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = $1`,
+      [id]
+    );
+    return result.affectedRows > 0;
+  }
+
+  async getActiveGroups(): Promise<ProductGroup[]> {
+    return await query<ProductGroup[]>(
+      'SELECT * FROM productgroups WHERE is_active = 1 ORDER BY groupname ASC'
+    );
+  }
+
+  async getGroupsWithProductCount(): Promise<(ProductGroup & { product_count: number })[]> {
+    const sql = `
+      SELECT 
+        pg.*,
+        COUNT(p.id) as product_count
+      FROM productgroups pg
+      LEFT JOIN products p ON pg.id = p.groupid
+      GROUP BY pg.id
+      ORDER BY pg.groupname ASC
+    `;
+    
+    return await query<(ProductGroup & { product_count: number })[]>(sql);
+  }
+
+  async searchGroups(searchTerm: string): Promise<ProductGroup[]> {
+    return await query<ProductGroup[]>(
+      'SELECT * FROM productgroups WHERE groupname ILIKE $1 OR description ILIKE $2 ORDER BY groupname ASC',
+      [`%${searchTerm}%`, `%${searchTerm}%`]
+    );
+  }
+
+  async getGroupProducts(groupId: number): Promise<Product[]> {
+    return await query<Product[]>(
+      'SELECT * FROM products WHERE groupid = $1 ORDER BY name ASC',
+      [groupId]
+    );
+  }
+
+  async count(): Promise<number> {
+    const result = await query<any[]>('SELECT COUNT(*) as count FROM productgroups');
+    return result[0]?.count || 0;
+  }
+
+  async getPaginated(page: number = 1, limit: number = 10): Promise<{ groups: ProductGroup[]; total: number; totalPages: number }> {
+    const offset = (page - 1) * limit;
+    
+    const groups = await query<ProductGroup[]>(
+      'SELECT * FROM productgroups ORDER BY groupname ASC LIMIT $1 OFFSET $2',
+      [limit, offset]
+    );
+    
+    const total = await this.count();
+    const totalPages = Math.ceil(total / limit);
+    
+    return { groups, total, totalPages };
   }
 }
